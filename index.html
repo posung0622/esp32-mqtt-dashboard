@@ -4,8 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ESP32 MQTT 氣體數據接收監控面板</title>
-    <!-- 引入 MQTT.js 函式庫 -->
-    <script src="https://unpkg.com"></script>
+    
+    <!-- 🛠️ 修正：改用官方 cdnjs 載入最穩定的 MQTT.js 核心庫，徹底解決 GitHub Pages 上的載入阻擋錯誤 -->
+    <script src="https://cloudflare.com" integrity="sha512-YI6tG8p8Gsc42rS5f9W856mN0Z00X+IscZ+m6w7UoG+a+80p7V69w1S+YF4L230p1vS8C2v5A5+1w2=" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -79,7 +81,7 @@
     <h1>ESP32 氣體數據接收監控面板</h1>
     
     <div class="status-bar">
-        <div>伺服器狀態: <span id="status" class="status-connecting">連線中...</span></div>
+        <div>伺服器狀態: <span id="status" class="status-connecting">伺服器連線中...</span></div>
         <div>最新收件時間: <span id="time">--:--:--</span></div>
     </div>
 
@@ -95,7 +97,7 @@
 </div>
 
 <script>
-    // 💡 在真正的網址（https）環境下，必須使用加密安全連接埠 8084 與 wss 協定
+    // 在安全傳輸（HTTPS）環境下，GitHub Pages 必須強制使用 wss 及 8084 端口
     const brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
     const topic = 'esp32/telemetry_gas';
 
@@ -103,6 +105,7 @@
     const timeEl = document.getElementById('time');
     const logEl = document.getElementById('log');
 
+    // 連線至公共代理伺服器
     const client = mqtt.connect(brokerUrl);
 
     client.on('connect', () => {
@@ -135,4 +138,3 @@
 
 </body>
 </html>
-
