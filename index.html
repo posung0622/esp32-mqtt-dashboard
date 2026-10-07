@@ -4,12 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ESP32 MQTT 氣體數據接收監控面板</title>
-    
-    <!-- 📦 核心無敵版：直接嵌入極簡 MQTT WebSocket 通訊代碼，100% 避開外部網路載入失敗問題 -->
-    <script>
-    const mqtt={connect:function(e){const t=new WebSocket(e);t.binaryType="arraybuffer";const n={on:function(e,t){this["on"+e]=t},subscribe:function(e){setTimeout(()=>{if(t.readyState===1){const n=new TextEncoder().encode(e),s=n.length,o=new Uint8Array([130,s+5,0,1,0,s>>8,255&s]),r=new Uint8Array(o.length+n.length+1);r.set(o),r.set(n,o.length),t.send(r)}},300)}};return t.onopen=()=>{n.onconnect&&n.onconnect()},t.onclose=()=>{n.onclose&&n.onclose()},t.onmessage=e=>{const t=new Uint8Array(e.data);if(t[0]===48){let e=2;t[1]&128&&(e=3);const s=256*t[e]+t[e+1],o=new TextDecoder().decode(t.subarray(e+2,e+2+s)),r=new TextDecoder().decode(t.subarray(e+2+s));n.onmessage&&n.onmessage(o,r)}},n}};
-    </script>
-    
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
@@ -82,15 +76,15 @@
     <h1>ESP32 氣體數據接收監控面板</h1>
     
     <div class="status-bar">
-        <div>伺服器狀態: <span id="status" class="status-connecting">伺服器連線中...</span></div>
+        <div>伺服器狀態: <span id="status" class="status-connecting">安全協定初始化中...</span></div>
         <div>最新收件時間: <span id="time">--:--:--</span></div>
     </div>
 
     <div class="grid">
         <div class="card" style="border-top-color:#e74c3c"><h3>Channel 0 (ch0)</h3><div class="value" id="val-ch0">0</div></div>
-        <div class="card" style="border-top-color:#e67e22"><h3>Channel 1 (ch1)</h3><div class="value" id="val-ch1">0</div></div>
-        <div class="card" style="border-top-color:#f1c40f"><h3>Channel 2 (ch2)</h3><div class="value" id="val-ch2">0</div></div>
-        <div class="card" style="border-top-color:#2ecc71"><h3>Channel 3 (ch3)</h3><div class="value" id="val-ch3">0</div></div>
+        <div class="card" style="border-top-color:#e67e22"><h3>Channel 1 (ch1)</h3><div class="value" id="val-ch2">0</div></div>
+        <div class="card" style="border-top-color:#f1c40f"><h3>Channel 2 (ch2)</h3><div class="value" id="val-ch3">0</div></div>
+        <div class="card" style="border-top-color:#2ecc71"><h3>Channel 3 (ch3)</h3><div class="value" id="val-ch4">0</div></div>
     </div>
 
     <h3>原始 MQTT JSON 數據日誌 (最新 1 筆)</h3>
@@ -98,43 +92,90 @@
 </div>
 
 <script>
-    // 在安全網址（HTTPS）環境下，GitHub Pages 必須強制使用 wss 及 8084 端口
-    const brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
-    const topic = 'esp32/telemetry_gas';
+    // 💡 建立標準安全的 MQTT over WebSocket 用戶端（100% 自包含碼）
+    const MQTT_WS = {
+        connect: function(url, topic, onConnect, onMessage) {
+            // 強制設定為 mqtt 子協定，通過 EMQX 閘道交握驗證
+            const ws = new WebSocket(url, 'mqtt');
+            ws.binaryType = "arraybuffer";
+
+            ws.onopen = () => {
+                // 發送標準 MQTT Connect 封包 (帶有 MQIsdp 協定識別標頭與隨機 ClientID)
+                const clientId = "Web_" + Math.random().toString(16).substr(2, 8);
+                const payload = new TextEncoder().encode(clientId);
+                const packet = new Uint8Array([
+                    0x10, 12 + payload.length, 
+                    0x00, 0x06, 0x4d, 0x51, 0x49, 0x73, 0x64, 0x70, 0x03, 0x02, 0x00, 0x3c, 
+                    0x00, payload.length
+                ]);
+                const fullPacket = new Uint8Array(packet.length + payload.length);
+                fullPacket.set(packet);
+                fullPacket.set(payload, packet.length);
+                ws.send(fullPacket);
+            };
+
+            ws.onmessage = (e) => {
+                const buffer = new Uint8Array(e.data);
+                // 收到 ConnAck (0x20) 代表安全連線成功建立
+                if (buffer[0] == 0x20 && buffer[3] == 0x00) {
+                    onConnect();
+                    // 發送標準 MQTT Subscribe 封包
+                    const topicBytes = new TextEncoder().encode(topic);
+                    const subPacket = new Uint8Array([
+                        0x82, topicBytes.length + 5,
+                        0x00, 0x01, 
+                        0x00, topicBytes.length
+                    ]);
+                    const fullSub = new Uint8Array(subPacket.length + topicBytes.length + 1);
+                    fullSub.set(subPacket);
+                    fullSub.set(topicBytes, subPacket.length);
+                    fullSub[fullSub.length - 1] = 0x00; // QoS 0
+                    ws.send(fullSub);
+                }
+                // 收到 Publish 訊息 (0x30) 代表收到訂閱主題的數據
+                else if (buffer[0] == 0x30) {
+                    let varLen = buffer[1];
+                    let headerOffset = 2;
+                    if (varLen & 128) { headerOffset = 3; }
+                    const topicLen = (buffer[headerOffset] << 8) + buffer[headerOffset + 1];
+                    const msgBytes = buffer.subarray(headerOffset + 2 + topicLen);
+                    const msgStr = new TextDecoder().decode(msgBytes);
+                    onMessage(msgStr);
+                }
+            };
+            return ws;
+        }
+    };
 
     const statusEl = document.getElementById('status');
     const timeEl = document.getElementById('time');
     const logEl = document.getElementById('log');
 
-    // 連線
-    const client = mqtt.connect(brokerUrl);
+    const brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
+    const targetTopic = 'esp32/telemetry_gas';
 
-    client.on('connect', () => {
-        statusEl.innerText = '已成功連線 (Connected)';
-        statusEl.className = 'status-connected';
-        client.subscribe(topic);
-    });
+    statusEl.innerText = "連線中 (安全協議交握)...";
 
-    client.on('close', () => {
-        statusEl.innerText = '連線已斷開，自動重連中...';
-        statusEl.className = 'status-connecting';
-    });
+    // 啟動連線
+    MQTT_WS.connect(brokerUrl, targetTopic, 
+        () => {
+            statusEl.innerText = '已成功連線 (Connected)';
+            statusEl.className = 'status-connected';
+        }, 
+        (payloadStr) => {
+            const now = new Date();
+            timeEl.innerText = now.toLocaleTimeString();
+            logEl.innerText = `[${now.toLocaleTimeString()}]\n${payloadStr}`;
 
-    client.on('message', (receivedTopic, message) => {
-        const now = new Date();
-        timeEl.innerText = now.toLocaleTimeString();
-
-        const payloadStr = message.toString();
-        logEl.innerText = `[${now.toLocaleTimeString()}] 主題: ${receivedTopic}\n${payloadStr}`;
-
-        try {
-            const data = JSON.parse(payloadStr);
-            if (data.ch0 !== undefined) document.getElementById('val-ch0').innerText = data.ch0;
-            if (data.ch1 !== undefined) document.getElementById('val-ch1').innerText = data.ch1;
-            if (data.ch2 !== undefined) document.getElementById('val-ch2').innerText = data.ch2;
-            if (data.ch3 !== undefined) document.getElementById('val-ch3').innerText = data.ch3;
-        } catch (e) {}
-    });
+            try {
+                const data = JSON.parse(payloadStr);
+                if (data.ch0 !== undefined) document.getElementById('val-ch0').innerText = data.ch0;
+                if (data.ch1 !== undefined) document.getElementById('val-ch1').innerText = data.ch1;
+                if (data.ch2 !== undefined) document.getElementById('val-ch2').innerText = data.ch2;
+                if (data.ch3 !== undefined) document.getElementById('val-ch3').innerText = data.ch3;
+            } catch (e) {}
+        }
+    );
 </script>
 
 </body>
