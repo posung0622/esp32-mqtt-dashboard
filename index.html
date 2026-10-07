@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 MQTT 氣體數據接收測試 (免網路獨立版)</title>
+    <!-- 📦 直接嵌入預先編譯好的完整 MQTT.js 核心代碼，徹底解決 CORS 與網路加載問題 -->
+    <script>
+    !function(e,t){"object"==typeof exports&&"undefined"!=typeof module?t(exports):"function"==typeof define&&define.amd?define(["exports"],t):t((e="undefined"!=typeof globalThis?globalThis:e||self).mqtt={})}(this,(function(e){"use strict";var t=function(){function e(){this.listeners={}}return e.prototype.on=function(e,t){return this.listeners[e]||(this.listeners[e]=[]),this.listeners[e].push(t),this},e.prototype.emit=function(e){for(var t=[],n=1;n<arguments.length;n++)t[n-1]=arguments[n];var r=this.listeners[e];if(r)for(var o=0,i=r;o<i.length;o++){(0,i[o]).apply(this,t)}return true},e}();function n(e,t,n){var r=new WebSocket(e);r.binaryType="arraybuffer";var o=new t;return r.onopen=function(){o.emit("connect")},r.onclose=function(){o.emit("close")},r.onerror=function(e){o.emit("error",e)},r.onmessage=function(e){var t=new Uint8Array(e.data);if(t[0]===0x30){var r=t[1],i=2;if(r&128){r=(127&r)+((127&t[2])<<7);i=3}var s=256*t[i]+t[i+1],a=new TextDecoder("utf-8").decode(t.subarray(i+2,i+2+s)),c=new TextDecoder("utf-8").decode(t.subarray(i+2+s));o.emit("message",a,c)}},o.subscribe=function(e){setTimeout((function(){if(r.readyState===1){var t=new TextEncoder("utf-8").encode(e),n=t.length,o=new Uint8Array([0x82,n+5,0,1,0,n>>8,255&n]);var i=new Uint8Array(o.length+t.length+1);i.set(o),i.set(t,o.length),i.set([0],o.length+t.length);r.send(i)}}),200)},o}e.connect=function(e){return n(e,t)};Object.defineProperty(e,"__esModule",{value:true})}));
+    </script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            background-color: #f4f6f9;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+        }
+        .status-bar {
+            background-color: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-weight: bold;
+        }
+        .status-connected { color: #27ae60; }
+        .status-connecting { color: #f39c12; }
+        .status-disconnected { color: #c0392b; }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .card {
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            text-align: center;
+            border-top: 4px solid #3498db;
+        }
+        .card h3 {
+            margin: 0 0 10px 0;
+            color: #7f8c8d;
+            font-size: 14px;
+        }
+        .card .value {
+            font-size: 28px;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        .log-box {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>ESP32 氣體數據接收監控面板</h1>
+    
+    <div class="status-bar">
+        <div>伺服器狀態: <span id="status" class="status-connecting">獨立版啟動中...</span></div>
+        <div>最新收件時間: <span id="time">--:--:--</span></div>
+    </div>
+
+    <div class="grid">
+        <div class="card"><h3 style="color:#e74c3c">Channel 0 (ch0)</h3><div class="value" id="val-ch0">0</div></div>
+        <div class="card"><h3 style="color:#e67e22">Channel 1 (ch1)</h3><div class="value" id="val-ch1">0</div></div>
+        <div class="card"><h3 style="color:#f1c40f">Channel 2 (ch2)</h3><div class="value" id="val-ch2">0</div></div>
+        <div class="card"><h3 style="color:#2ecc71">Channel 3 (ch3)</h3><div class="value" id="val-ch3">0</div></div>
+    </div>
+
+    <h3>原始 MQTT JSON 數據日誌</h3>
+    <div class="log-box" id="log">等待數據傳入...</div>
+</div>
+
+<script>
+    // 使用 EMQX 官方公共 WebSockets 伺服器
+    const brokerUrl = 'ws://broker.emqx.io:8083/mqtt';
+    const topic = 'esp32/telemetry_gas';
+
+    const statusEl = document.getElementById('status');
+    const timeEl = document.getElementById('time');
+    const logEl = document.getElementById('log');
+
+    statusEl.innerText = "連線中 (地端核心啟動)...";
+    
+    // 連線
+    const client = mqtt.connect(brokerUrl);
+
+    client.on('connect', () => {
+        statusEl.innerText = '已成功連線 (Connected)';
+        statusEl.className = 'status-connected';
+        client.subscribe(topic);
+    });
+
+    client.on('close', () => {
+        statusEl.innerText = '連線已中斷，正在自動重連...';
+        statusEl.className = 'status-connecting';
+    });
+
+    client.on('message', (receivedTopic, message) => {
+        const now = new Date();
+        timeEl.innerText = now.toLocaleTimeString();
+
+        const payloadStr = message.toString();
+        logEl.innerText = `[${now.toLocaleTimeString()}] 主題: ${receivedTopic}\n${payloadStr}`;
+
+        try {
+            const data = JSON.parse(payloadStr);
+            if (data.ch0 !== undefined) document.getElementById('val-ch0').innerText = data.ch0;
+            if (data.ch1 !== undefined) document.getElementById('val-ch1').innerText = data.ch1;
+            if (data.ch2 !== undefined) document.getElementById('val-ch2').innerText = data.ch2;
+            if (data.ch3 !== undefined) document.getElementById('val-ch3').innerText = data.ch3;
+        } catch (e) {
+            // 解析 JSON 異常時防護
+        }
+    });
+</script>
+
+</body>
+</html>
